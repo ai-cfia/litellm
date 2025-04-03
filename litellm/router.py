@@ -50,6 +50,7 @@ from litellm.caching.caching import (
     RedisCache,
     RedisClusterCache,
 )
+from litellm.constants import DEFAULT_MAX_LRU_CACHE_SIZE
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.litellm_core_utils.asyncify import run_async_function
 from litellm.litellm_core_utils.core_helpers import _get_parent_otel_span_from_kwargs
@@ -67,10 +68,7 @@ from litellm.router_utils.add_retry_fallback_headers import (
     add_fallback_headers_to_response,
     add_retry_headers_to_response,
 )
-from litellm.router_utils.batch_utils import (
-    _get_router_metadata_variable_name,
-    replace_model_in_jsonl,
-)
+from litellm.router_utils.batch_utils import _get_router_metadata_variable_name
 from litellm.router_utils.client_initalization_utils import InitalizeCachedClient
 from litellm.router_utils.clientside_credential_handler import (
     get_dynamic_litellm_params,
@@ -104,7 +102,12 @@ from litellm.router_utils.router_callbacks.track_deployment_metrics import (
     increment_deployment_successes_for_current_minute,
 )
 from litellm.scheduler import FlowItem, Scheduler
-from litellm.types.llms.openai import AllMessageValues, Batch, FileObject, FileTypes
+from litellm.types.llms.openai import (
+    AllMessageValues,
+    Batch,
+    FileTypes,
+    OpenAIFileObject,
+)
 from litellm.types.router import (
     CONFIGURABLE_CLIENTSIDE_AUTH_PARAMS,
     VALID_LITELLM_ENVIRONMENTS,
@@ -2702,7 +2705,7 @@ class Router:
         self,
         model: str,
         **kwargs,
-    ) -> FileObject:
+    ) -> OpenAIFileObject:
         try:
             kwargs["model"] = model
             kwargs["original_function"] = self._acreate_file
@@ -2726,7 +2729,7 @@ class Router:
         self,
         model: str,
         **kwargs,
-    ) -> FileObject:
+    ) -> OpenAIFileObject:
         try:
             verbose_router_logger.debug(
                 f"Inside _atext_completion()- model: {model}; kwargs: {kwargs}"
@@ -2753,9 +2756,9 @@ class Router:
             stripped_model, custom_llm_provider, _, _ = get_llm_provider(
                 model=data["model"]
             )
-            kwargs["file"] = replace_model_in_jsonl(
-                file_content=kwargs["file"], new_model_name=stripped_model
-            )
+            # kwargs["file"] = replace_model_in_jsonl(
+            #     file_content=kwargs["file"], new_model_name=stripped_model
+            # )
 
             response = litellm.acreate_file(
                 **{
@@ -2795,6 +2798,7 @@ class Router:
             verbose_router_logger.info(
                 f"litellm.acreate_file(model={model_name})\033[32m 200 OK\033[0m"
             )
+
             return response  # type: ignore
         except Exception as e:
             verbose_router_logger.exception(
@@ -5073,7 +5077,7 @@ class Router:
                     rpm_usage += t
         return tpm_usage, rpm_usage
 
-    @lru_cache(maxsize=64)
+    @lru_cache(maxsize=DEFAULT_MAX_LRU_CACHE_SIZE)
     def _cached_get_model_group_info(
         self, model_group: str
     ) -> Optional[ModelGroupInfo]:
