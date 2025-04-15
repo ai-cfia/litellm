@@ -139,6 +139,7 @@ from litellm.litellm_core_utils.core_helpers import (
 )
 from litellm.litellm_core_utils.credential_accessor import CredentialAccessor
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
+from litellm.litellm_core_utils.sensitive_data_masker import SensitiveDataMasker
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, HTTPHandler
 from litellm.proxy._experimental.mcp_server.server import router as mcp_router
 from litellm.proxy._experimental.mcp_server.tool_registry import (
@@ -167,7 +168,6 @@ from litellm.proxy.batches_endpoints.endpoints import router as batches_router
 ## Import All Misc routes here ##
 from litellm.proxy.caching_routes import router as caching_router
 from litellm.proxy.common_request_processing import ProxyBaseLLMRequestProcessing
-from litellm.proxy.common_utils.admin_ui_utils import html_form
 from litellm.proxy.common_utils.callback_utils import initialize_callbacks_on_proxy
 from litellm.proxy.common_utils.debug_utils import init_verbose_loggers
 from litellm.proxy.common_utils.debug_utils import router as debugging_endpoints_router
@@ -175,6 +175,7 @@ from litellm.proxy.common_utils.encrypt_decrypt_utils import (
     decrypt_value_helper,
     encrypt_value_helper,
 )
+from litellm.proxy.common_utils.html_forms.ui_login import html_form
 from litellm.proxy.common_utils.http_parsing_utils import (
     _read_request_body,
     check_file_size_under_limit,
@@ -229,12 +230,16 @@ from litellm.proxy.management_endpoints.key_management_endpoints import (
 from litellm.proxy.management_endpoints.model_management_endpoints import (
     _add_model_to_db,
     _add_team_model_to_db,
+    _deduplicate_litellm_router_models,
 )
 from litellm.proxy.management_endpoints.model_management_endpoints import (
     router as model_management_router,
 )
 from litellm.proxy.management_endpoints.organization_endpoints import (
     router as organization_router,
+)
+from litellm.proxy.management_endpoints.tag_management_endpoints import (
+    router as tag_management_router,
 )
 from litellm.proxy.management_endpoints.team_callback_endpoints import (
     router as team_callback_router,
@@ -249,6 +254,7 @@ from litellm.proxy.management_endpoints.ui_sso import (
 )
 from litellm.proxy.management_endpoints.ui_sso import router as ui_sso_router
 from litellm.proxy.management_helpers.audit_logs import create_audit_log_for_update
+from litellm.proxy.middleware.prometheus_auth_middleware import PrometheusAuthMiddleware
 from litellm.proxy.openai_files_endpoints.files_endpoints import (
     router as openai_files_router,
 )
@@ -345,10 +351,12 @@ from fastapi import (
     Request,
     Response,
     UploadFile,
+    applications,
     status,
 )
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import (
     FileResponse,
@@ -380,6 +388,7 @@ global_max_parallel_request_retries_env: Optional[str] = os.getenv(
     "LITELLM_GLOBAL_MAX_PARALLEL_REQUEST_RETRIES"
 )
 proxy_state = ProxyState()
+SENSITIVE_DATA_MASKER = SensitiveDataMasker()
 if global_max_parallel_request_retries_env is None:
     global_max_parallel_request_retries: int = 3
 else:
@@ -731,7 +740,7 @@ try:
 
 except Exception:
     pass
-# current_dir = os.path.dirname(os.path.abspath(__file__))
+current_dir = os.path.dirname(os.path.abspath(__file__))
 # ui_path = os.path.join(current_dir, "_experimental", "out")
 # # Mount this test directory instead
 # app.mount("/ui", StaticFiles(directory=ui_path, html=True), name="ui")
@@ -745,6 +754,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.add_middleware(PrometheusAuthMiddleware)
+
+swagger_path = os.path.join(current_dir, "swagger")
+app.mount("/swagger", StaticFiles(directory=swagger_path), name="swagger")
+
+
+def swagger_monkey_patch(*args, **kwargs):
+    return get_swagger_ui_html(
+        *args,
+        **kwargs,
+        swagger_js_url="/swagger/swagger-ui-bundle.js",
+        swagger_css_url="/swagger/swagger-ui.css",
+        swagger_favicon_url="/swagger/favicon.png",
+    )
+
+
+applications.get_swagger_ui_html = swagger_monkey_patch
 
 from typing import Dict
 
@@ -1373,7 +1399,9 @@ class ProxyConfig:
         team_config: dict = {}
         for team in all_teams_config:
             if "team_id" not in team:
-                raise Exception(f"team_id missing from team: {team}")
+                raise Exception(
+                    f"team_id missing from team: {SENSITIVE_DATA_MASKER.mask_dict(team)}"
+                )
             if team_id == team["team_id"]:
                 team_config = team
                 break
@@ -1676,14 +1704,11 @@ class ProxyConfig:
                                 callback
                             )
                             if "prometheus" in callback:
-                                verbose_proxy_logger.debug(
-                                    "Starting Prometheus Metrics on /metrics"
+                                from litellm.integrations.prometheus import (
+                                    PrometheusLogger,
                                 )
-                                from prometheus_client import make_asgi_app
 
-                                # Add prometheus asgi middleware to route /metrics requests
-                                metrics_app = make_asgi_app()
-                                app.mount("/metrics", metrics_app)
+                                PrometheusLogger._mount_metrics_endpoint(premium_user)
                     print(  # noqa
                         f"{blue_color_code} Initialized Success Callbacks - {litellm.success_callback} {reset_color_code}"
                     )  # noqa
@@ -3166,6 +3191,11 @@ class ProxyStartupEvent:
                 )
                 await proxy_logging_obj.slack_alerting_instance.send_fallback_stats_from_prometheus()
 
+        if litellm.prometheus_initialize_budget_metrics is True:
+            from litellm.integrations.prometheus import PrometheusLogger
+
+            PrometheusLogger.initialize_budget_metrics_cron_job(scheduler=scheduler)
+
         scheduler.start()
 
     @classmethod
@@ -3286,6 +3316,7 @@ async def model_list(
         user_model=user_model,
         infer_model_from_keys=general_settings.get("infer_model_from_keys", False),
         return_wildcard_routes=return_wildcard_routes,
+        llm_router=llm_router,
     )
 
     return dict(
@@ -4247,8 +4278,47 @@ async def websocket_endpoint(
         "websocket": websocket,
     }
 
+    headers = dict(websocket.headers.items())  # Convert headers to dict first
+
+    request = Request(
+        scope={
+            "type": "http",
+            "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+            "method": "POST",
+            "path": "/v1/realtime",
+        }
+    )
+
+    request._url = websocket.url
+
+    async def return_body():
+        return_string = f'{{"model": "{model}"}}'
+        # return string as bytes
+        return return_string.encode()
+
+    request.body = return_body  # type: ignore
+
     ### ROUTE THE REQUEST ###
+    base_llm_response_processor = ProxyBaseLLMRequestProcessing(data=data)
     try:
+        (
+            data,
+            litellm_logging_obj,
+        ) = await base_llm_response_processor.common_processing_pre_call_logic(
+            request=request,
+            general_settings=general_settings,
+            user_api_key_dict=user_api_key_dict,
+            version=version,
+            proxy_logging_obj=proxy_logging_obj,
+            proxy_config=proxy_config,
+            user_model=user_model,
+            user_temperature=user_temperature,
+            user_request_timeout=user_request_timeout,
+            user_max_tokens=user_max_tokens,
+            user_api_base=user_api_base,
+            model=model,
+            route_type="_arealtime",
+        )
         llm_call = await route_request(
             data=data,
             route_type="_arealtime",
@@ -5333,6 +5403,71 @@ async def _check_if_model_is_user_added(
     return filtered_models
 
 
+def _check_if_model_is_team_model(
+    models: List[DeploymentTypedDict], user_row: LiteLLM_UserTable
+) -> List[Dict]:
+    """
+    Check if model is a team model
+
+    Check if user is a member of the team that the model belongs to
+    """
+
+    user_team_models: List[Dict] = []
+    for model in models:
+        model_team_id = model.get("model_info", {}).get("team_id", None)
+
+        if model_team_id is not None:
+            if model_team_id in user_row.teams:
+                user_team_models.append(cast(Dict, model))
+
+    return user_team_models
+
+
+async def non_admin_all_models(
+    all_models: List[Dict],
+    llm_router: Router,
+    user_api_key_dict: UserAPIKeyAuth,
+    prisma_client: Optional[PrismaClient],
+):
+    """
+    Check if model is in db
+
+    Check if db model is 'created_by' == user_api_key_dict.user_id
+
+    Only return models that match
+    """
+    if prisma_client is None:
+        raise HTTPException(
+            status_code=500,
+            detail={"error": CommonProxyErrors.db_not_connected_error.value},
+        )
+
+    # Get all models that are user-added, when model created_by == user_api_key_dict.user_id
+    all_models = await _check_if_model_is_user_added(
+        models=all_models,
+        user_api_key_dict=user_api_key_dict,
+        prisma_client=prisma_client,
+    )
+
+    if user_api_key_dict.user_id:
+        try:
+            user_row = await prisma_client.db.litellm_usertable.find_unique(
+                where={"user_id": user_api_key_dict.user_id}
+            )
+        except Exception:
+            raise HTTPException(status_code=400, detail={"error": "User not found"})
+
+        # Get all models that are team models, when model team_id == user_row.teams
+        all_models += _check_if_model_is_team_model(
+            models=llm_router.get_model_list() or [],
+            user_row=user_row,
+        )
+
+    # de-duplicate models. Only return unique model ids
+    unique_models = _deduplicate_litellm_router_models(models=all_models)
+    return unique_models
+
+
 @router.get(
     "/v2/model/info",
     description="v2 - returns models available to the user based on their API key permissions. Shows model info from config.yaml (except api key and api base). Filter to just user-added models with ?user_models_only=true",
@@ -5378,16 +5513,10 @@ async def model_info_v2(
     if model is not None:
         all_models = [m for m in all_models if m["model_name"] == model]
 
-    if user_models_only is True:
-        """
-        Check if model is in db
-
-        Check if db model is 'created_by' == user_api_key_dict.user_id
-
-        Only return models that match
-        """
-        all_models = await _check_if_model_is_user_added(
-            models=all_models,
+    if user_models_only:
+        all_models = await non_admin_all_models(
+            all_models=all_models,
+            llm_router=llm_router,
             user_api_key_dict=user_api_key_dict,
             prisma_client=prisma_client,
         )
@@ -8062,3 +8191,4 @@ app.include_router(openai_files_router)
 app.include_router(team_callback_router)
 app.include_router(budget_management_router)
 app.include_router(model_management_router)
+app.include_router(tag_management_router)

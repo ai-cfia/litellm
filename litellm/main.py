@@ -138,11 +138,10 @@ from .llms.cohere.embed import handler as cohere_embed
 from .llms.custom_httpx.aiohttp_handler import BaseLLMAIOHTTPHandler
 from .llms.custom_httpx.llm_http_handler import BaseLLMHTTPHandler
 from .llms.custom_llm import CustomLLM, custom_chat_llm_router
-from .llms.databricks.chat.handler import DatabricksChatCompletion
 from .llms.databricks.embed.handler import DatabricksEmbeddingHandler
 from .llms.deprecated_providers import aleph_alpha, palm
 from .llms.groq.chat.handler import GroqChatCompletion
-from .llms.huggingface.chat.handler import Huggingface
+from .llms.huggingface.embedding.handler import HuggingFaceEmbedding
 from .llms.nlp_cloud.chat.handler import completion as nlp_cloud_chat_completion
 from .llms.ollama.completion import handler as ollama
 from .llms.oobabooga.chat import oobabooga
@@ -215,7 +214,6 @@ openai_chat_completions = OpenAIChatCompletion()
 openai_text_completions = OpenAITextCompletion()
 openai_audio_transcriptions = OpenAIAudioTranscription()
 openai_image_variations = OpenAIImageVariationsHandler()
-databricks_chat_completions = DatabricksChatCompletion()
 groq_chat_completions = GroqChatCompletion()
 azure_ai_embedding = AzureAIEmbedding()
 anthropic_chat_completions = AnthropicChatCompletion()
@@ -223,7 +221,7 @@ azure_chat_completions = AzureChatCompletion()
 azure_o1_chat_completions = AzureOpenAIO1ChatCompletion()
 azure_text_completions = AzureTextCompletion()
 azure_audio_transcriptions = AzureAudioTranscription()
-huggingface = Huggingface()
+huggingface_embed = HuggingFaceEmbedding()
 predibase_chat_completions = PredibaseChatCompletion()
 codestral_text_completions = CodestralTextCompletion()
 bedrock_converse_chat_completion = BedrockConverseLLM()
@@ -452,7 +450,7 @@ async def acompletion(
     fallbacks = fallbacks or litellm.model_fallbacks
     if fallbacks is not None:
         response = await async_completion_with_fallbacks(
-            **completion_kwargs, kwargs={"fallbacks": fallbacks}
+            **completion_kwargs, kwargs={"fallbacks": fallbacks, **kwargs}
         )
         if response is None:
             raise Exception(
@@ -956,7 +954,11 @@ def completion(  # type: ignore # noqa: PLR0915
     non_default_params = get_non_default_completion_params(kwargs=kwargs)
     litellm_params = {}  # used to prevent unbound var errors
     ## PROMPT MANAGEMENT HOOKS ##
-    if isinstance(litellm_logging_obj, LiteLLMLoggingObj) and prompt_id is not None:
+    if isinstance(litellm_logging_obj, LiteLLMLoggingObj) and (
+        litellm_logging_obj.should_run_prompt_management_hooks(
+            prompt_id=prompt_id, non_default_params=non_default_params
+        )
+    ):
         (
             model,
             messages,
@@ -2143,7 +2145,6 @@ def completion(  # type: ignore # noqa: PLR0915
 
             response = model_response
         elif custom_llm_provider == "huggingface":
-            custom_llm_provider = "huggingface"
             huggingface_key = (
                 api_key
                 or litellm.huggingface_key
@@ -2152,40 +2153,23 @@ def completion(  # type: ignore # noqa: PLR0915
                 or litellm.api_key
             )
             hf_headers = headers or litellm.headers
-
-            custom_prompt_dict = custom_prompt_dict or litellm.custom_prompt_dict
-            model_response = huggingface.completion(
+            response = base_llm_http_handler.completion(
                 model=model,
                 messages=messages,
-                api_base=api_base,  # type: ignore
-                headers=hf_headers or {},
+                headers=hf_headers,
                 model_response=model_response,
-                print_verbose=print_verbose,
-                optional_params=optional_params,
-                litellm_params=litellm_params,
-                logger_fn=logger_fn,
-                encoding=encoding,
                 api_key=huggingface_key,
+                api_base=api_base,
                 acompletion=acompletion,
                 logging_obj=logging,
-                custom_prompt_dict=custom_prompt_dict,
+                optional_params=optional_params,
+                litellm_params=litellm_params,
                 timeout=timeout,  # type: ignore
                 client=client,
+                custom_llm_provider=custom_llm_provider,
+                encoding=encoding,
+                stream=stream,
             )
-            if (
-                "stream" in optional_params
-                and optional_params["stream"] is True
-                and acompletion is False
-            ):
-                # don't try to access stream object,
-                response = CustomStreamWrapper(
-                    model_response,
-                    model,
-                    custom_llm_provider="huggingface",
-                    logging_obj=logging,
-                )
-                return response
-            response = model_response
         elif custom_llm_provider == "oobabooga":
             custom_llm_provider = "oobabooga"
             model_response = oobabooga.completion(
@@ -2230,24 +2214,22 @@ def completion(  # type: ignore # noqa: PLR0915
 
             ## COMPLETION CALL
             try:
-                response = databricks_chat_completions.completion(
+                response = base_llm_http_handler.completion(
                     model=model,
+                    stream=stream,
                     messages=messages,
-                    headers=headers,
-                    model_response=model_response,
-                    print_verbose=print_verbose,
-                    api_key=api_key,
-                    api_base=api_base,
                     acompletion=acompletion,
-                    logging_obj=logging,
+                    api_base=api_base,
+                    model_response=model_response,
                     optional_params=optional_params,
                     litellm_params=litellm_params,
-                    logger_fn=logger_fn,
-                    timeout=timeout,  # type: ignore
-                    custom_prompt_dict=custom_prompt_dict,
-                    client=client,  # pass AsyncOpenAI, OpenAI client
-                    encoding=encoding,
                     custom_llm_provider="databricks",
+                    timeout=timeout,
+                    headers=headers,
+                    encoding=encoding,
+                    api_key=api_key,
+                    logging_obj=logging,  # model call logging done inside the class as we make need to modify I/O to fit aleph alpha's requirements
+                    client=client,
                 )
             except Exception as e:
                 ## LOGGING - log the original exception returned
@@ -2676,9 +2658,9 @@ def completion(  # type: ignore # noqa: PLR0915
                     "aws_region_name" not in optional_params
                     or optional_params["aws_region_name"] is None
                 ):
-                    optional_params[
-                        "aws_region_name"
-                    ] = aws_bedrock_client.meta.region_name
+                    optional_params["aws_region_name"] = (
+                        aws_bedrock_client.meta.region_name
+                    )
 
             bedrock_route = BedrockModelInfo.get_bedrock_route(model)
             if bedrock_route == "converse":
@@ -3627,7 +3609,7 @@ def embedding(  # noqa: PLR0915
                 or get_secret("HUGGINGFACE_API_KEY")
                 or litellm.api_key
             )  # type: ignore
-            response = huggingface.embedding(
+            response = huggingface_embed.embedding(
                 model=model,
                 input=input,
                 encoding=encoding,  # type: ignore
@@ -3638,6 +3620,7 @@ def embedding(  # noqa: PLR0915
                 optional_params=optional_params,
                 client=client,
                 aembedding=aembedding,
+                litellm_params=litellm_params_dict,
             )
         elif custom_llm_provider == "bedrock":
             if isinstance(input, str):
@@ -4384,9 +4367,9 @@ def adapter_completion(
     new_kwargs = translation_obj.translate_completion_input_params(kwargs=kwargs)
 
     response: Union[ModelResponse, CustomStreamWrapper] = completion(**new_kwargs)  # type: ignore
-    translated_response: Optional[
-        Union[BaseModel, AdapterCompletionStreamWrapper]
-    ] = None
+    translated_response: Optional[Union[BaseModel, AdapterCompletionStreamWrapper]] = (
+        None
+    )
     if isinstance(response, ModelResponse):
         translated_response = translation_obj.translate_completion_output_params(
             response=response
@@ -5806,9 +5789,9 @@ def stream_chunk_builder(  # noqa: PLR0915
         ]
 
         if len(content_chunks) > 0:
-            response["choices"][0]["message"][
-                "content"
-            ] = processor.get_combined_content(content_chunks)
+            response["choices"][0]["message"]["content"] = (
+                processor.get_combined_content(content_chunks)
+            )
 
         reasoning_chunks = [
             chunk
@@ -5819,9 +5802,9 @@ def stream_chunk_builder(  # noqa: PLR0915
         ]
 
         if len(reasoning_chunks) > 0:
-            response["choices"][0]["message"][
-                "reasoning_content"
-            ] = processor.get_combined_reasoning_content(reasoning_chunks)
+            response["choices"][0]["message"]["reasoning_content"] = (
+                processor.get_combined_reasoning_content(reasoning_chunks)
+            )
 
         audio_chunks = [
             chunk

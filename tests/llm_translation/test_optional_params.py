@@ -1404,6 +1404,24 @@ def test_azure_modalities_param():
     assert optional_params["modalities"] == ["text", "audio"]
     assert optional_params["audio"] == {"type": "audio_input", "input": "test.wav"}
 
+def test_litellm_proxy_thinking_param():
+    optional_params = get_optional_params(
+        model="gpt-4o",
+        custom_llm_provider="litellm_proxy",
+        thinking={"type": "enabled", "budget_tokens": 1024},
+    )
+    assert optional_params["extra_body"]["thinking"] == {"type": "enabled", "budget_tokens": 1024}
+
+def test_gemini_modalities_param():
+    optional_params = get_optional_params(
+        model="gemini-1.5-pro",
+        custom_llm_provider="gemini",
+        modalities=["text", "image"],
+    )
+
+    assert optional_params["responseModalities"] == ["TEXT", "IMAGE"]
+    
+
 
 
 def test_azure_response_format_param():
@@ -1431,3 +1449,13 @@ def test_anthropic_unified_reasoning_content(model, provider):
     )
     assert optional_params["thinking"] == {"type": "enabled", "budget_tokens": 4096}
 
+
+
+def test_azure_response_format(monkeypatch):
+    monkeypatch.setenv("AZURE_API_VERSION", "2025-02-01")
+    optional_params = get_optional_params(
+        model="azure/gpt-4o-mini",
+        custom_llm_provider="azure",
+        response_format={"type": "json_object"},
+    )
+    assert optional_params["response_format"] == {"type": "json_object"}

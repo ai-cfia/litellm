@@ -288,7 +288,29 @@ class OpenAIFileObject(BaseModel):
     `error` field on `fine_tuning.job`.
     """
 
-    _hidden_params: dict = {}
+    _hidden_params: dict = {"response_cost": 0.0}  # no cost for writing a file
+
+    def __contains__(self, key):
+        # Define custom behavior for the 'in' operator
+        return hasattr(self, key)
+
+    def get(self, key, default=None):
+        # Custom .get() method to access attributes with a default value if the attribute doesn't exist
+        return getattr(self, key, default)
+
+    def __getitem__(self, key):
+        # Allow dictionary-style access to attributes
+        return getattr(self, key)
+
+    def json(self, **kwargs):  # type: ignore
+        try:
+            return self.model_dump()  # noqa
+        except Exception:
+            # if using pydantic v1
+            return self.dict()
+
+
+CREATE_FILE_REQUESTS_PURPOSE = Literal["assistants", "batch", "fine-tune"]
 
 
 # OpenAI Files Types
@@ -307,8 +329,8 @@ class CreateFileRequest(TypedDict, total=False):
         timeout: Optional[float] = None
     """
 
-    file: FileTypes
-    purpose: Literal["assistants", "batch", "fine-tune"]
+    file: Required[FileTypes]
+    purpose: Required[CREATE_FILE_REQUESTS_PURPOSE]
     extra_headers: Optional[Dict[str, str]]
     extra_body: Optional[Dict[str, str]]
     timeout: Optional[float]
@@ -695,6 +717,7 @@ class ChatCompletionToolParamFunctionChunk(TypedDict, total=False):
     name: Required[str]
     description: str
     parameters: dict
+    strict: bool
 
 
 class OpenAIChatCompletionToolParam(TypedDict):
@@ -892,7 +915,17 @@ class BaseLiteLLMOpenAIResponseObject(BaseModel):
 
 
 class OutputTokensDetails(BaseLiteLLMOpenAIResponseObject):
-    reasoning_tokens: int
+    reasoning_tokens: Optional[int] = None
+
+    text_tokens: Optional[int] = None
+
+    model_config = {"extra": "allow"}
+
+
+class InputTokensDetails(BaseLiteLLMOpenAIResponseObject):
+    audio_tokens: Optional[int] = None
+    cached_tokens: Optional[int] = None
+    text_tokens: Optional[int] = None
 
     model_config = {"extra": "allow"}
 
@@ -901,10 +934,13 @@ class ResponseAPIUsage(BaseLiteLLMOpenAIResponseObject):
     input_tokens: int
     """The number of input tokens."""
 
+    input_tokens_details: Optional[InputTokensDetails] = None
+    """A detailed breakdown of the input tokens."""
+
     output_tokens: int
     """The number of output tokens."""
 
-    output_tokens_details: Optional[OutputTokensDetails]
+    output_tokens_details: Optional[OutputTokensDetails] = None
     """A detailed breakdown of the output tokens."""
 
     total_tokens: int
@@ -1173,3 +1209,20 @@ ResponsesAPIStreamingResponse = Annotated[
 
 
 REASONING_EFFORT = Literal["low", "medium", "high"]
+
+
+class OpenAIRealtimeStreamSessionEvents(TypedDict):
+    event_id: str
+    session: dict
+    type: Union[Literal["session.created"], Literal["session.updated"]]
+
+
+class OpenAIRealtimeStreamResponseBaseObject(TypedDict):
+    event_id: str
+    response: dict
+    type: str
+
+
+OpenAIRealtimeStreamList = List[
+    Union[OpenAIRealtimeStreamResponseBaseObject, OpenAIRealtimeStreamSessionEvents]
+]

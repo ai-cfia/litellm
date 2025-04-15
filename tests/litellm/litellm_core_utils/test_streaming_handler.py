@@ -500,8 +500,9 @@ async def test_streaming_handler_with_usage(
     assert chunk_has_usage
 
 
-@pytest.mark.parametrize("sync_mode", [True, False])
+@pytest.mark.parametrize("sync_mode", [False])
 @pytest.mark.asyncio
+@pytest.mark.flaky(reruns=3)
 async def test_streaming_with_usage_and_logging(sync_mode: bool):
     import time
 

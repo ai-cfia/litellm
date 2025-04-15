@@ -66,6 +66,7 @@ from litellm.proxy._types import (
     KeyManagementSettings,
     LiteLLM_UpperboundKeyGenerateParams,
 )
+from litellm.types.proxy.management_endpoints.ui_sso import DefaultTeamSSOParams
 from litellm.types.utils import StandardKeyGenerationConfig, LlmProviders
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.litellm_core_utils.logging_callback_manager import LoggingCallbackManager
@@ -112,6 +113,7 @@ _custom_logger_compatible_callbacks_literal = Literal[
     "pagerduty",
     "humanloop",
     "gcs_pubsub",
+    "anthropic_cache_control_hook",
 ]
 logged_real_time_event_types: Optional[Union[List[str], Literal["*"]]] = None
 _known_custom_logger_compatible_callbacks: List = list(
@@ -123,6 +125,7 @@ callbacks: List[
 langfuse_default_tags: Optional[List[str]] = None
 langsmith_batch_size: Optional[int] = None
 prometheus_initialize_budget_metrics: Optional[bool] = False
+require_auth_for_metrics_endpoint: Optional[bool] = False
 argilla_batch_size: Optional[int] = None
 datadog_use_v1: Optional[bool] = False  # if you want to use v1 datadog logged payload
 gcs_pub_sub_use_v1: Optional[
@@ -160,7 +163,7 @@ token: Optional[
 telemetry = True
 max_tokens: int = DEFAULT_MAX_TOKENS  # OpenAI Defaults
 drop_params = bool(os.getenv("LITELLM_DROP_PARAMS", False))
-modify_params = False
+modify_params = bool(os.getenv("LITELLM_MODIFY_PARAMS", False))
 retry = True
 ### AUTH ###
 api_key: Optional[str] = None
@@ -267,6 +270,7 @@ default_key_generate_params: Optional[Dict] = None
 upperbound_key_generate_params: Optional[LiteLLM_UpperboundKeyGenerateParams] = None
 key_generation_settings: Optional[StandardKeyGenerationConfig] = None
 default_internal_user_params: Optional[Dict] = None
+default_team_params: Optional[Union[DefaultTeamSSOParams, Dict]] = None
 default_team_settings: Optional[List] = None
 max_user_budget: Optional[float] = None
 default_max_internal_user_budget: Optional[float] = None
@@ -311,6 +315,7 @@ from litellm.litellm_core_utils.get_model_cost_map import get_model_cost_map
 
 model_cost = get_model_cost_map(url=model_cost_map_url)
 custom_prompt_dict: Dict[str, dict] = {}
+check_provider_endpoint = False
 
 
 ####### THREAD-SPECIFIC DATA ####################
@@ -759,6 +764,7 @@ from .utils import (
     supports_audio_input,
     supports_audio_output,
     supports_system_messages,
+    supports_reasoning,
     get_litellm_params,
     acreate,
     get_max_tokens,
@@ -799,9 +805,8 @@ from .llms.aiohttp_openai.chat.transformation import AiohttpOpenAIChatConfig
 from .llms.galadriel.chat.transformation import GaladrielChatConfig
 from .llms.github.chat.transformation import GithubChatConfig
 from .llms.empower.chat.transformation import EmpowerChatConfig
-from .llms.huggingface.chat.transformation import (
-    HuggingfaceChatConfig as HuggingfaceConfig,
-)
+from .llms.huggingface.chat.transformation import HuggingFaceChatConfig
+from .llms.huggingface.embedding.transformation import HuggingFaceEmbeddingConfig
 from .llms.oobabooga.chat.transformation import OobaboogaConfig
 from .llms.maritalk import MaritalkConfig
 from .llms.openrouter.chat.transformation import OpenrouterConfig

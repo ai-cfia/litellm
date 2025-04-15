@@ -188,7 +188,15 @@ const sidebars = {
         "providers/azure_ai",
         "providers/aiml",
         "providers/vertex",
-        "providers/gemini",
+
+        {
+          type: "category",
+          label: "Google AI Studio",
+          items: [
+            "providers/gemini",
+            "providers/google_ai_studio/files",
+          ]
+        },
         "providers/anthropic",
         "providers/aws_sagemaker",
         "providers/bedrock",
@@ -332,7 +340,15 @@ const sidebars = {
         },
         "rerank",
         "assistants",
-        "files_endpoints",
+
+        {
+          type: "category",
+          label: "/files",
+          items: [
+            "files_endpoints",
+            "proxy/litellm_managed_files",
+          ],
+        },
         "batches",
         "realtime",
         "fine_tuning",
@@ -391,9 +407,9 @@ const sidebars = {
       type: "category",
       label: "Logging & Observability",
       items: [
+        "observability/langfuse_integration",
         "observability/lunary_integration",
         "observability/mlflow",
-        "observability/langfuse_integration",
         "observability/gcs_bucket_integration",
         "observability/langsmith_integration",
         "observability/literalai_integration",
@@ -427,6 +443,8 @@ const sidebars = {
       label: "Tutorials",
       items: [
         "tutorials/openweb_ui",
+        "tutorials/msft_sso",
+        "tutorials/tag_management",
         'tutorials/litellm_proxy_aporia',
         {
           type: "category",

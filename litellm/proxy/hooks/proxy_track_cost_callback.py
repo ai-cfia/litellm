@@ -13,6 +13,7 @@ from litellm.litellm_core_utils.core_helpers import (
 from litellm.litellm_core_utils.litellm_logging import StandardLoggingPayloadSetup
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.proxy.auth.auth_checks import log_db_metrics
+from litellm.proxy.auth.route_checks import RouteChecks
 from litellm.proxy.utils import ProxyUpdateSpend
 from litellm.types.utils import (
     StandardLoggingPayload,
@@ -33,7 +34,12 @@ class _ProxyDBLogger(CustomLogger):
         original_exception: Exception,
         user_api_key_dict: UserAPIKeyAuth,
     ):
+        request_route = user_api_key_dict.request_route
         if _ProxyDBLogger._should_track_errors_in_db() is False:
+            return
+        elif request_route is not None and not RouteChecks.is_llm_api_route(
+            route=request_route
+        ):
             return
 
         from litellm.proxy.proxy_server import proxy_logging_obj
@@ -194,13 +200,15 @@ class _ProxyDBLogger(CustomLogger):
             error_msg = f"Error in tracking cost callback - {str(e)}\n Traceback:{traceback.format_exc()}"
             model = kwargs.get("model", "")
             metadata = kwargs.get("litellm_params", {}).get("metadata", {})
-            error_msg += f"\n Args to _PROXY_track_cost_callback\n model: {model}\n metadata: {metadata}\n"
+            call_type = kwargs.get("call_type", "")
+            error_msg += f"\n Args to _PROXY_track_cost_callback\n model: {model}\n metadata: {metadata}\n call_type: {call_type}\n"
             asyncio.create_task(
                 proxy_logging_obj.failed_tracking_alert(
                     error_message=error_msg,
                     failing_model=model,
                 )
             )
+
             verbose_proxy_logger.exception(
                 "Error in tracking cost callback - %s", str(e)
             )
